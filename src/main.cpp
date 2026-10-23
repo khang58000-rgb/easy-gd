@@ -129,17 +129,20 @@ using namespace instantjump;
 // We take over button 1 (jump / fly) inside PlayLayer only.
 // ----------------------------------------------------------------------
 class $modify(InstantJumpGameLayer, GJBaseGameLayer) {
-    void queueButton(int button, bool down, bool isPlayer1) {
+    // Real 2.2081 signature: (button, push, isPlayer2, timestamp). Note isPlayer2, not isPlayer1.
+    void queueButton(int button, bool down, bool isPlayer2, double timestamp) {
+        bool const isPlayer1 = !isPlayer2;
+
         auto* pl = PlayLayer::get();
         if (!pl || button != 1 ||
             static_cast<GJBaseGameLayer*>(this) != static_cast<GJBaseGameLayer*>(pl)) {
-            GJBaseGameLayer::queueButton(button, down, isPlayer1);
+            GJBaseGameLayer::queueButton(button, down, isPlayer2, timestamp);
             return;
         }
 
         auto const& cfg = getConfig();
         if (!cfg.enabled) {
-            GJBaseGameLayer::queueButton(button, down, isPlayer1);
+            GJBaseGameLayer::queueButton(button, down, isPlayer2, timestamp);
             return;
         }
 
