@@ -1,0 +1,91 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081"
+	},
+	"version": "v1.0.0",
+	"id": "khang58033.instant-jump",
+	"name": "Instant Jump",
+	"developer": "KYLZNX",
+	"description": "Jump from the exact frame you click. Input buffering, input queuing, double-click fix, slope assist, jump prediction, and smoother ship / wave spam.",
+	"repository": "https://github.com/YOUR-USERNAME/instant-jump",
+	"tags": ["gameplay", "enhancement", "utility"],
+	"settings": {
+		"enabled": {
+			"type": "bool",
+			"name": "Enable Instant Jump",
+			"description": "Master switch. When off, the game handles clicks exactly like vanilla.",
+			"default": true
+		},
+		"step-guard": {
+			"type": "bool",
+			"name": "Queue Inputs Per Step",
+			"description": "Input queuing: the first click of a physics step is applied instantly, and any extra presses/releases in the same step are queued so each one lasts at least one full step. This is what makes fast ship / UFO tapping and <cy>Wave</c> spam register every click, and keeps straight flying consistent.",
+			"default": true
+		},
+		"double-click-fix": {
+			"type": "bool",
+			"name": "Double-Click Fix",
+			"description": "Ignores a second press that arrives faster than a human can click (mouse / controller bounce).",
+			"default": true
+		},
+		"double-click-ms": {
+			"type": "int",
+			"name": "Double-Click Window (ms)",
+			"description": "Presses closer together than this are treated as one click. Lower it if you spam extremely fast.",
+			"default": 8,
+			"min": 1,
+			"max": 50
+		},
+		"buffering": {
+			"type": "bool",
+			"name": "Input Buffering",
+			"description": "A click made shortly BEFORE you land is remembered and fires the moment you touch the ground.",
+			"default": true
+		},
+		"buffer-ms": {
+			"type": "int",
+			"name": "Buffer Window (ms)",
+			"description": "How long a mid-air click is remembered. Higher = more forgiving, but a mid-air orb click may also cause an extra jump on landing. Use 0 to disable buffering.",
+			"default": 70,
+			"min": 0,
+			"max": 300
+		},
+		"queue-size": {
+			"type": "int",
+			"name": "Buffered Clicks Kept",
+			"description": "How many mid-air clicks can wait in the buffer at once (input queue length).",
+			"default": 2,
+			"min": 1,
+			"max": 6
+		},
+		"slope-assist": {
+			"type": "bool",
+			"name": "Slope Assist",
+			"description": "Landing on or sliding off a slope flickers the 'on ground' flag. This widens the buffer window while you are on, or just left, a slope.",
+			"default": true
+		},
+		"slope-extra-ms": {
+			"type": "int",
+			"name": "Slope Extra Window (ms)",
+			"description": "Extra buffer time added on slopes.",
+			"default": 25,
+			"min": 0,
+			"max": 150
+		},
+		"prediction": {
+			"type": "bool",
+			"name": "Jump Prediction",
+			"description": "While you are falling, the buffer window grows with your fall speed (fast falls cover more distance per millisecond, so landing timing is tighter).",
+			"default": true
+		},
+		"prediction-ms": {
+			"type": "int",
+			"name": "Max Prediction Bonus (ms)",
+			"description": "Largest extra buffer time Jump Prediction can add at full fall speed.",
+			"default": 30,
+			"min": 0,
+			"max": 150
+		}
+	}
+}
