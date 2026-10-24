@@ -2,15 +2,17 @@
 // Developer: KYLZNX  |  id: khang58033.instant-jump
 //
 // GD 2.2081 already stamps every click with a timestamp and applies it at the
-// right sub-step. This mod does NOT delay that; it hooks GJBaseGameLayer::handleButton
-// (the point where the game applies a press/release) and adds:
-//  * Input queuing ("step guard"): the first press/release of a physics step is applied
-//    immediately; extra ones in the same step are queued so every tap lasts a full step.
-//    Keeps ship/UFO taps and Wave spam from collapsing into nothing.
+// right sub-step. This mod never delays or reorders that. It hooks
+// GJBaseGameLayer::handleButton (where the game applies a press/release) and adds:
 //  * Double-click fix: presses closer together than a human can click are dropped.
-//  * Input buffering: a click made shortly before landing fires on landing.
+//  * Input buffering / queue: a click made shortly before landing fires on landing.
 //  * Slope assist: bigger buffer window while on / just off a slope.
 //  * Jump prediction: buffer window grows with fall speed.
+//  * Stuck-key failsafe: if the game is holding a button the player already released,
+//    the mod releases it.
+//
+// Presses and releases are ALWAYS passed straight to the game (only an impossible-speed
+// duplicate press can be dropped). The mod only adds extra taps on its own.
 //
 // NOTE: GJBaseGameLayer::queueButton is inline in the 2.2081 Windows bindings and
 // cannot be hooked, which is why we hook handleButton instead.
@@ -36,10 +38,9 @@ namespace instantjump {
     }
 
     // Game time in ms, accumulated from the per-step dt of player 1's update.
-    // All input timing below uses this clock so it stays correct under lag spikes.
     static double g_gameMs = 0.0;
 
-    // Set while we inject a button change ourselves, so our own hook lets it through.
+    // Set while WE inject a button change, so our own hook lets it through untouched.
     static bool g_injecting = false;
 
     // ------------------------------------------------------------------
@@ -47,7 +48,6 @@ namespace instantjump {
     // ------------------------------------------------------------------
     struct Config {
         bool enabled = true;
-        bool stepGuard = true;
         bool doubleClickFix = true;
         bool buffering = true;
         bool slopeAssist = true;
@@ -67,7 +67,6 @@ namespace instantjump {
             lastLoad = now;
             auto* m = Mod::get();
             cfg.enabled = m->getSettingValue<bool>("enabled");
-            cfg.stepGuard = m->getSettingValue<bool>("step-guard");
             cfg.doubleClickFix = m->getSettingValue<bool>("double-click-fix");
             cfg.buffering = m->getSettingValue<bool>("buffering");
             cfg.slopeAssist = m->getSettingValue<bool>("slope-assist");
@@ -84,22 +83,24 @@ namespace instantjump {
     // ------------------------------------------------------------------
     // Per-player input state. Index 0 = player 1 input, 1 = player 2 input.
     // ------------------------------------------------------------------
-    constexpr size_t kMaxQueuedActions = 8;
-
     struct Slot {
-        bool holding = false;          // what the user's finger/key is doing
-        bool changedThisStep = false;  // we already changed the game's button state this step
+        bool holding = false;          // what the player's finger/key is doing (as the game reports it)
+        bool gameDown = false;         // what the game was last told (by the game itself or by us)
+        bool pendingRelease = false;   // we injected a tap and still owe it a release
         double lastPushMs = -1e9;      // game time of last accepted press (double-click fix)
         double lastSlopeMs = -1e9;     // last game time this player was on a slope
-        std::deque<bool> actions;      // queued button changes (true = press, false = release)
+        double changedMs = -1e9;       // game time gameDown last changed
+        double injectedAtMs = -1e9;    // game time of our injected press
         std::deque<double> buffered;   // game times of clicks made while airborne
 
         void reset() {
             holding = false;
-            changedThisStep = false;
+            gameDown = false;
+            pendingRelease = false;
             lastPushMs = -1e9;
             lastSlopeMs = -1e9;
-            actions.clear();
+            changedMs = -1e9;
+            injectedAtMs = -1e9;
             buffered.clear();
         }
     };
@@ -110,6 +111,15 @@ namespace instantjump {
     // Ship, UFO, ball, wave and swing react in mid-air, so they are never buffered.
     static bool isGroundMode(PlayerObject* p) {
         return !(p->m_isShip || p->m_isBird || p->m_isBall || p->m_isDart || p->m_isSwing);
+    }
+
+    // Sends a press/release to the game ourselves (bypasses our own hook logic).
+    static void inject(PlayLayer* pl, Slot& s, bool down, bool isPlayer1) {
+        g_injecting = true;
+        pl->handleButton(down, 1, isPlayer1);
+        g_injecting = false;
+        s.gameDown = down;
+        s.changedMs = g_gameMs;
     }
 
 }
@@ -138,12 +148,13 @@ class $modify(InstantJumpGameLayer, GJBaseGameLayer) {
         double const now = g_gameMs;
 
         if (down) {
-            // Double-click fix: swallow impossible-speed repeat presses.
+            // Double-click fix: swallow an impossible-speed repeat press (never a release).
             if (cfg.doubleClickFix && (now - s.lastPushMs) < static_cast<double>(cfg.doubleClickMs)) {
                 return;
             }
             s.lastPushMs = now;
             s.holding = true;
+            s.pendingRelease = false;  // the player took over; never release their hold for them
 
             // Input buffering: remember clicks made while we cannot act yet.
             if (cfg.buffering && cfg.bufferMs > 0) {
@@ -158,30 +169,22 @@ class $modify(InstantJumpGameLayer, GJBaseGameLayer) {
         }
         else {
             s.holding = false;
+            s.pendingRelease = false;
         }
 
-        // Input queuing: one change per physics step, extras wait for the next step.
-        bool const canApplyNow = !cfg.stepGuard || (!s.changedThisStep && s.actions.empty());
-        if (canApplyNow) {
-            GJBaseGameLayer::handleButton(down, button, isPlayer1);
-            s.changedThisStep = true;
-        }
-        else {
-            if (s.actions.size() >= kMaxQueuedActions) {
-                // Overflow: drop the backlog but keep the newest state so we never get stuck held.
-                s.actions.clear();
-            }
-            s.actions.push_back(down);
-        }
+        // Always pass the real input straight through, immediately.
+        GJBaseGameLayer::handleButton(down, button, isPlayer1);
+        s.gameDown = down;
+        s.changedMs = now;
     }
 };
 
 // ----------------------------------------------------------------------
 // Runs once per physics step for each player. Here we
 //  1. advance the game clock,
-//  2. release the "changed this step" lock,
+//  2. finish an injected tap (release it one step later),
 //  3. fire buffered clicks on landing (with slope + prediction widening),
-//  4. apply the next queued press/release.
+//  4. failsafe: release a stuck button.
 // ----------------------------------------------------------------------
 class $modify(InstantJumpPlayer, PlayerObject) {
     void update(float dt) {
@@ -201,12 +204,17 @@ class $modify(InstantJumpPlayer, PlayerObject) {
         if (!cfg.enabled) return;
 
         auto& s = g_slots[idx];
-        s.changedThisStep = false;
-
+        bool const isP1 = (idx == 0);
         double const now = g_gameMs;
         if (this->m_isOnSlope) s.lastSlopeMs = now;
 
-        // --- buffered clicks -> fire on landing --------------------------
+        // --- 1. finish an injected tap: release it at least one step later ---
+        if (s.pendingRelease && now > s.injectedAtMs) {
+            s.pendingRelease = false;
+            if (!s.holding) inject(pl, s, false, isP1);
+        }
+
+        // --- 2. buffered clicks -> fire on landing ------------------------
         if (!s.buffered.empty()) {
             bool const grounded = this->m_isOnGround || this->m_isOnSlope;
 
@@ -229,25 +237,22 @@ class $modify(InstantJumpPlayer, PlayerObject) {
                 s.buffered.pop_front();
             }
 
-            if (grounded && !s.buffered.empty() && s.actions.empty()) {
+            if (grounded && !s.buffered.empty() && !s.pendingRelease) {
                 s.buffered.pop_front();
                 // If the finger is still down the game re-jumps by itself on landing.
-                // Otherwise inject a tap: press now, release next step.
-                if (!s.holding) {
-                    s.actions.push_back(true);
-                    s.actions.push_back(false);
+                // Otherwise inject a tap: press now, release one step later.
+                if (!s.holding && !s.gameDown) {
+                    inject(pl, s, true, isP1);
+                    s.pendingRelease = true;
+                    s.injectedAtMs = now;
                 }
             }
         }
 
-        // --- apply next queued change -------------------------------------
-        if (!s.actions.empty()) {
-            bool const down = s.actions.front();
-            s.actions.pop_front();
-            g_injecting = true;
-            pl->handleButton(down, 1, idx == 0);
-            g_injecting = false;
-            s.changedThisStep = true;
+        // --- 3. stuck-key failsafe ------------------------------------------
+        // The game believes the button is down, the player let go, and we owe nothing.
+        if (s.gameDown && !s.holding && !s.pendingRelease && (now - s.changedMs) > 150.0) {
+            inject(pl, s, false, isP1);
         }
     }
 };
