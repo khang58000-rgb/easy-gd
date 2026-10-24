@@ -9,18 +9,16 @@
 	"developer": "KYLZNX",
 	"description": "Input assist for jumping: input buffering, input queuing, double-click fix, slope assist, jump prediction, and smoother ship / wave spam. Builds on the game's own timestamped clicks.",
 	"repository": "https://github.com/YOUR-USERNAME/instant-jump",
-	"tags": ["gameplay", "enhancement", "utility"],
+	"tags": [
+		"gameplay",
+		"enhancement",
+		"utility"
+	],
 	"settings": {
 		"enabled": {
 			"type": "bool",
 			"name": "Enable Instant Jump",
 			"description": "Master switch. When off, the game handles clicks exactly like vanilla (it already applies each click at its exact sub-step in 2.2081).",
-			"default": true
-		},
-		"step-guard": {
-			"type": "bool",
-			"name": "Queue Inputs Per Step",
-			"description": "Input queuing: the first click of a physics step is applied instantly, and any extra presses/releases in the same step are queued so each one lasts at least one full step. This is what makes fast ship / UFO tapping and <cy>Wave</c> spam register every click, and keeps straight flying consistent.",
 			"default": true
 		},
 		"double-click-fix": {
