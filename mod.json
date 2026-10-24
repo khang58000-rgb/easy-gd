@@ -7,14 +7,14 @@
 	"id": "khang58033.instant-jump",
 	"name": "Instant Jump",
 	"developer": "KYLZNX",
-	"description": "Jump from the exact frame you click. Input buffering, input queuing, double-click fix, slope assist, jump prediction, and smoother ship / wave spam.",
+	"description": "Input assist for jumping: input buffering, input queuing, double-click fix, slope assist, jump prediction, and smoother ship / wave spam. Builds on the game's own timestamped clicks.",
 	"repository": "https://github.com/YOUR-USERNAME/instant-jump",
 	"tags": ["gameplay", "enhancement", "utility"],
 	"settings": {
 		"enabled": {
 			"type": "bool",
 			"name": "Enable Instant Jump",
-			"description": "Master switch. When off, the game handles clicks exactly like vanilla.",
+			"description": "Master switch. When off, the game handles clicks exactly like vanilla (it already applies each click at its exact sub-step in 2.2081).",
 			"default": true
 		},
 		"step-guard": {
