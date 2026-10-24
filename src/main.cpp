@@ -1,16 +1,19 @@
 // Instant Jump - Geode mod for Geometry Dash 2.2081
 // Developer: KYLZNX  |  id: khang58033.instant-jump
 //
-// What it does
-//  * Instant click: a press/release is handed to the game the moment the click
-//    event arrives, instead of waiting in the game's own queue for the next frame.
-//  * Input queuing ("step guard"): at most one press/release is applied per
-//    physics step; extra ones are queued so every tap lasts a full step.
-//    This keeps ship/UFO taps and Wave spam from collapsing into nothing.
+// GD 2.2081 already stamps every click with a timestamp and applies it at the
+// right sub-step. This mod does NOT delay that; it hooks GJBaseGameLayer::handleButton
+// (the point where the game applies a press/release) and adds:
+//  * Input queuing ("step guard"): the first press/release of a physics step is applied
+//    immediately; extra ones in the same step are queued so every tap lasts a full step.
+//    Keeps ship/UFO taps and Wave spam from collapsing into nothing.
 //  * Double-click fix: presses closer together than a human can click are dropped.
 //  * Input buffering: a click made shortly before landing fires on landing.
 //  * Slope assist: bigger buffer window while on / just off a slope.
 //  * Jump prediction: buffer window grows with fall speed.
+//
+// NOTE: GJBaseGameLayer::queueButton is inline in the 2.2081 Windows bindings and
+// cannot be hooked, which is why we hook handleButton instead.
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
@@ -26,16 +29,21 @@ using namespace geode::prelude;
 
 namespace instantjump {
 
-    // ------------------------------------------------------------------
-    // Time
-    // ------------------------------------------------------------------
-    static double nowMs() {
+    // Wall-clock, used ONLY to refresh the cached settings.
+    static double wallMs() {
         using namespace std::chrono;
         return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
     }
 
+    // Game time in ms, accumulated from the per-step dt of player 1's update.
+    // All input timing below uses this clock so it stays correct under lag spikes.
+    static double g_gameMs = 0.0;
+
+    // Set while we inject a button change ourselves, so our own hook lets it through.
+    static bool g_injecting = false;
+
     // ------------------------------------------------------------------
-    // Settings (cached for 250 ms so we never hammer the settings map)
+    // Settings (cached for 250 ms)
     // ------------------------------------------------------------------
     struct Config {
         bool enabled = true;
@@ -54,7 +62,7 @@ namespace instantjump {
     static Config const& getConfig() {
         static Config cfg;
         static double lastLoad = -1e9;
-        double const now = nowMs();
+        double const now = wallMs();
         if (now - lastLoad > 250.0) {
             lastLoad = now;
             auto* m = Mod::get();
@@ -81,10 +89,10 @@ namespace instantjump {
     struct Slot {
         bool holding = false;          // what the user's finger/key is doing
         bool changedThisStep = false;  // we already changed the game's button state this step
-        double lastPushMs = -1e9;      // for the double-click fix
-        double lastSlopeMs = -1e9;     // last time this player was on a slope
+        double lastPushMs = -1e9;      // game time of last accepted press (double-click fix)
+        double lastSlopeMs = -1e9;     // last game time this player was on a slope
         std::deque<bool> actions;      // queued button changes (true = press, false = release)
-        std::deque<double> buffered;   // timestamps of clicks made while airborne
+        std::deque<double> buffered;   // game times of clicks made while airborne
 
         void reset() {
             holding = false;
@@ -104,50 +112,30 @@ namespace instantjump {
         return !(p->m_isShip || p->m_isBird || p->m_isBall || p->m_isDart || p->m_isSwing);
     }
 
-    // Applies a press/release now, or queues it if this step already had a change.
-    static void submit(GJBaseGameLayer* layer, Slot& s, bool down, bool isPlayer1, Config const& cfg) {
-        bool const canApplyNow = !cfg.stepGuard || (!s.changedThisStep && s.actions.empty());
-        if (canApplyNow) {
-            layer->handleButton(down, 1, isPlayer1);
-            s.changedThisStep = true;
-        }
-        else {
-            if (s.actions.size() >= kMaxQueuedActions) {
-                // Overflow: drop the backlog but keep the newest state so we never get stuck held.
-                s.actions.clear();
-            }
-            s.actions.push_back(down);
-        }
-    }
-
 }
 
 using namespace instantjump;
 
 // ----------------------------------------------------------------------
-// Click entry point: this is where touches / key presses arrive.
-// We take over button 1 (jump / fly) inside PlayLayer only.
+// The game calls this whenever it applies a press/release (button 1 = jump/fly).
 // ----------------------------------------------------------------------
 class $modify(InstantJumpGameLayer, GJBaseGameLayer) {
-    // Real 2.2081 signature: (button, push, isPlayer2, timestamp). Note isPlayer2, not isPlayer1.
-    void queueButton(int button, bool down, bool isPlayer2, double timestamp) {
-        bool const isPlayer1 = !isPlayer2;
-
+    void handleButton(bool down, int button, bool isPlayer1) {
         auto* pl = PlayLayer::get();
-        if (!pl || button != 1 ||
+        if (g_injecting || !pl || button != 1 ||
             static_cast<GJBaseGameLayer*>(this) != static_cast<GJBaseGameLayer*>(pl)) {
-            GJBaseGameLayer::queueButton(button, down, isPlayer2, timestamp);
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
 
         auto const& cfg = getConfig();
         if (!cfg.enabled) {
-            GJBaseGameLayer::queueButton(button, down, isPlayer2, timestamp);
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
 
         auto& s = g_slots[isPlayer1 ? 0 : 1];
-        double const now = nowMs();
+        double const now = g_gameMs;
 
         if (down) {
             // Double-click fix: swallow impossible-speed repeat presses.
@@ -172,16 +160,28 @@ class $modify(InstantJumpGameLayer, GJBaseGameLayer) {
             s.holding = false;
         }
 
-        // Instant click: do not wait for the game's own queue.
-        submit(this, s, down, isPlayer1, cfg);
+        // Input queuing: one change per physics step, extras wait for the next step.
+        bool const canApplyNow = !cfg.stepGuard || (!s.changedThisStep && s.actions.empty());
+        if (canApplyNow) {
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
+            s.changedThisStep = true;
+        }
+        else {
+            if (s.actions.size() >= kMaxQueuedActions) {
+                // Overflow: drop the backlog but keep the newest state so we never get stuck held.
+                s.actions.clear();
+            }
+            s.actions.push_back(down);
+        }
     }
 };
 
 // ----------------------------------------------------------------------
 // Runs once per physics step for each player. Here we
-//  1. release the "changed this step" lock,
-//  2. fire buffered clicks on landing (with slope + prediction widening),
-//  3. apply the next queued press/release.
+//  1. advance the game clock,
+//  2. release the "changed this step" lock,
+//  3. fire buffered clicks on landing (with slope + prediction widening),
+//  4. apply the next queued press/release.
 // ----------------------------------------------------------------------
 class $modify(InstantJumpPlayer, PlayerObject) {
     void update(float dt) {
@@ -195,13 +195,15 @@ class $modify(InstantJumpPlayer, PlayerObject) {
         else if (static_cast<PlayerObject*>(this) == pl->m_player2) idx = 1;
         else return;
 
+        if (idx == 0) g_gameMs += static_cast<double>(dt) * 1000.0;
+
         auto const& cfg = getConfig();
         if (!cfg.enabled) return;
 
         auto& s = g_slots[idx];
         s.changedThisStep = false;
 
-        double const now = nowMs();
+        double const now = g_gameMs;
         if (this->m_isOnSlope) s.lastSlopeMs = now;
 
         // --- buffered clicks -> fire on landing --------------------------
@@ -242,7 +244,9 @@ class $modify(InstantJumpPlayer, PlayerObject) {
         if (!s.actions.empty()) {
             bool const down = s.actions.front();
             s.actions.pop_front();
+            g_injecting = true;
             pl->handleButton(down, 1, idx == 0);
+            g_injecting = false;
             s.changedThisStep = true;
         }
     }
